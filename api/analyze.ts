@@ -1,17 +1,24 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // CORS preflight
-  if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "content-type");
-    return res.status(200).end();
-  }
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+function setCors(res: VercelResponse) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "content-type, authorization");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+}
 
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
+    setCors(res);
+
+    // CORS preflight
+    if (req.method === "OPTIONS") {
+      return res.status(204).end();
+    }
+
+    if (req.method !== "POST") {
+      return res.status(405).json({ error: "Method not allowed" });
+    }
+
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
     const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
     if (!OPENAI_API_KEY) {
@@ -70,12 +77,11 @@ Constraints:
 
     const data = await r.json();
     const text = data?.choices?.[0]?.message?.content || "";
-
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "content-type");
     return res.status(200).json({ text });
   } catch (e: any) {
-    console.error("Server error:", e);
-    return res.status(500).json({ error: "server", detail: e?.message || String(e) });
+    setCors(res);
+    return res
+      .status(500)
+      .json({ error: "server", detail: e?.message || String(e) });
   }
 }
