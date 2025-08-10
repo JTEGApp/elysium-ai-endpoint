@@ -1,81 +1,64 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import OpenAI from "openai";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "content-type");
-    return res.status(200).end();
-  }
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-
   try {
-    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-    const MODEL = process.env.OPENAI_MODEL || "gpt-5-mini";
-    if (!OPENAI_API_KEY) {
+    if (req.method !== "POST") {
+      return res.status(405).json({ error: "Method not allowed" });
+    }
+
+    // ✅ Read environment variable directly from process.env
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      console.error("❌ OPENAI_API_KEY is not set in environment variables");
       return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
 
-    const { snapshot, referenceNotes, brand } = req.body || {};
-    if (!snapshot?.scores) {
-      return res.status(400).json({ error: "Missing snapshot.scores" });
+    // ✅ Parse JSON body
+    const { brand, snapshot, referenceNotes } = req.body || {};
+    if (!brand || !snapshot) {
+      return res.status(400).json({ error: "Missing brand or snapshot data" });
     }
 
-    const system = `
-You are an organizational culture advisor for a premium consultancy called "${brand || "The Elysium Group"}".
-Use HBR's 8 culture styles (Caring, Purpose, Learning, Enjoyment, Results, Authority, Safety, Order).
-Be plain-spoken, premium, and actionable. No numeric scores in the prose. Focus on 90-day leader behaviors.
-Return:
-1) Executive Summary (3–5 bullets)
-2) Top Strengths (why they matter)
-3) Priority Shifts (2–4 targeted recommendations)
-4) Leadership Behaviors & Rituals (linked to styles)
-5) Risks to Monitor & Metrics to Watch
-`;
+    // ✅ Create OpenAI client
+    const client = new OpenAI({ apiKey });
 
-    const user = `
-Snapshot:
-${JSON.stringify(snapshot, null, 2)}
+    // Build a prompt for the AI
+    const prompt = `
+You are an expert in organizational culture and leadership.
+Brand: ${brand}
+
+Observed culture styles: ${snapshot.top3?.observed?.join(", ")}
+Personal affinity styles: ${snapshot.top3?.personal?.join(", ")}
+
+Scores:
+${snapshot.scores
+  ?.map((s: any) => `${s.style}: ${s.current}`)
+  .join("\n")}
 
 Reference notes:
-${(referenceNotes || []).join("\n")}
+${referenceNotes?.join("\n") || "None"}
 
-Constraints:
-- No numeric scoring in the text.
-- Premium, concise, actionable tone.
-`;
+Write a plain-spoken analysis for the leadership team.
+Avoid numeric scoring in the prose.
+Provide recommendations for reinforcing strengths and addressing gaps.
+    `;
 
-    const r = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user }
-        ],
-        temperature: 0.4
-      })
+    // Call GPT-4o or GPT-5
+    const completion = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "You are a leadership and culture consultant." },
+        { role: "user", content: prompt }
+      ],
+      temperature: 0.7
     });
 
-    if (!r.ok) {
-      const err = await r.text();
-      return res.status(500).json({ error: "OpenAI error", detail: err });
-    }
+    const output = completion.choices[0].message?.content || "";
 
-    const data = await r.json();
-    const text = data?.choices?.[0]?.message?.content || "";
-
-    // CORS for your frontend
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "content-type");
-    return res.status(200).json({ text });
-  } catch (e: any) {
-    return res.status(500).json({ error: "server", detail: e?.message || String(e) });
+    res.status(200).json({ text: output });
+  } catch (err: any) {
+    console.error("❌ API error:", err);
+    res.status(500).json({ error: err.message || "Internal Server Error" });
   }
 }
-
