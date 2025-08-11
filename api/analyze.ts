@@ -1,18 +1,21 @@
-// /api/analyze.ts
+// api/analyze.ts
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
-function setCORS(res: VercelResponse) {
+function setCors(res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "content-type");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "content-type, authorization");
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  setCORS(res);
+  // Always set CORS first
+  setCors(res);
 
+  // Preflight
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
+
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
@@ -69,17 +72,18 @@ Constraints:
       }),
     });
 
-    const text = await r.text();
     if (!r.ok) {
-      // Return OpenAI error body so you can see it in DevTools (still CORS-safe)
-      return res.status(500).json({ error: "OpenAI error", detail: text });
+      const detail = await r.text().catch(() => "");
+      return res.status(500).json({ error: "OpenAI error", detail });
     }
 
-    const data = JSON.parse(text);
-    const content = data?.choices?.[0]?.message?.content || "";
-    return res.status(200).json({ text: content });
+    const data = await r.json();
+    const text = data?.choices?.[0]?.message?.content || "";
+    return res.status(200).json({ text });
   } catch (e: any) {
     console.error("Server error:", e);
-    return res.status(500).json({ error: "server", detail: e?.message || String(e) });
+    return res
+      .status(500)
+      .json({ error: "server", detail: e?.message || String(e) });
   }
 }
