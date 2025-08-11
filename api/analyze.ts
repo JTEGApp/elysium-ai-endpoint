@@ -1,18 +1,18 @@
 // /api/analyze.ts
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
-function cors(res: VercelResponse) {
+function setCORS(res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "content-type");
-  res.setHeader("Access-Control-Allow-Methods", "OPTIONS, POST");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "content-type, authorization");
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  cors(res);
+  setCORS(res);
 
-  // Preflight
-  if (req.method === "OPTIONS") return res.status(200).end();
-
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
@@ -24,13 +24,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
 
-    const { snapshot, referenceNotes, brand } = (req.body ?? {}) as any;
+    const { snapshot, referenceNotes, brand } = req.body || {};
     if (!snapshot?.scores) {
       return res.status(400).json({ error: "Missing snapshot.scores" });
     }
 
     const system = `
-You are an organizational culture advisor for "${brand || "The Elysium Group"}".
+You are an organizational culture advisor for a premium consultancy called "${brand || "The Elysium Group"}".
 Use HBR's 8 culture styles (Caring, Purpose, Learning, Enjoyment, Results, Authority, Safety, Order).
 Be plain-spoken, premium, and actionable. No numeric scores in the prose. Focus on 90-day leader behaviors.
 Return:
@@ -69,15 +69,17 @@ Constraints:
       }),
     });
 
+    const text = await r.text();
     if (!r.ok) {
-      const detailText = await r.text().catch(() => "");
-      return res.status(500).json({ error: "OpenAI error", detail: detailText });
+      // Return OpenAI error body so you can see it in DevTools (still CORS-safe)
+      return res.status(500).json({ error: "OpenAI error", detail: text });
     }
 
-    const data = await r.json();
-    const text = data?.choices?.[0]?.message?.content || "";
-    return res.status(200).json({ text });
+    const data = JSON.parse(text);
+    const content = data?.choices?.[0]?.message?.content || "";
+    return res.status(200).json({ text: content });
   } catch (e: any) {
+    console.error("Server error:", e);
     return res.status(500).json({ error: "server", detail: e?.message || String(e) });
   }
 }
