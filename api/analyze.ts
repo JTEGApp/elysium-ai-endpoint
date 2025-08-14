@@ -1,72 +1,75 @@
-// api/analyze.ts
-export const config = { runtime: "edge" };
+import type { VercelRequest, VercelResponse } from "@vercel/node";
 
-function json(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-headers": "content-type,authorization",
-      "access-control-allow-methods": "POST,OPTIONS",
-    },
-  });
+function cors(res: VercelResponse) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "content-type, authorization");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
 }
 
-export default async function handler(req: Request): Promise<Response> {
-  // CORS preflight
-  if (req.method === "OPTIONS") return json({ ok: true }, 200);
-  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  cors(res);
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
   try {
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
     const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
-    if (!OPENAI_API_KEY) return json({ error: "Missing OPENAI_API_KEY" }, 500);
-
-    const url = new URL(req.url);
-    const mode = url.searchParams.get("mode") || ""; // use ?mode=dry to bypass OpenAI
-
-    const body = await req.json().catch(() => ({}));
-    const { snapshot, referenceNotes, brand } = body || {};
-    if (!snapshot?.scores) return json({ error: "Missing snapshot.scores" }, 400);
-
-    if (mode === "dry") {
-      return json({
-        text:
-          "DRY RUN — Endpoint is healthy. OpenAI call skipped.\n" +
-          `Brand: ${brand || "The Elysium Group"}\n` +
-          `Scores: ${snapshot.scores.length}\n` +
-          `Top3: ${JSON.stringify(snapshot.top3 || {})}`,
-      });
+    if (!OPENAI_API_KEY) {
+      return res.status(401).json({ error: "Missing OPENAI_API_KEY" });
     }
 
-    const system = `
-You are an organizational culture advisor for a premium consultancy called "${brand || "The Elysium Group"}".
+    const body = (req.body || {}) as {
+      brand?: string;
+      snapshot?: { scores?: Array<{ key: string; style?: string; title?: string; current?: number }>; top3?: { observed?: string[]; personal?: string[] } };
+      referenceNotes?: string[];
+      systemOverride?: string;
+    };
+
+    const { brand, snapshot, referenceNotes = [], systemOverride } = body;
+
+    if (!snapshot || !Array.isArray(snapshot.scores) || snapshot.scores.length === 0) {
+      return res.status(400).json({ error: "Missing snapshot.scores (array required)" });
+    }
+
+    // Normalize scores to strip any problem fields & keep content minimal
+    const normalizedScores = snapshot.scores
+      .filter((r) => typeof r?.current === "number" && isFinite(r.current as number))
+      .map((r) => ({
+        key: r.key,
+        label: r.style ?? r.title ?? r.key,
+        current: r.current,
+      }));
+
+    const sysPrompt =
+      systemOverride ||
+      `You are an organizational culture advisor for a premium consultancy called "${brand || "The Elysium Group"}".
 Use HBR's 8 culture styles (Caring, Purpose, Learning, Enjoyment, Results, Authority, Safety, Order).
-Be plain-spoken, premium, and actionable. No numeric scores in the prose. Focus on 90-day leader behaviors.
-Return:
+Be plain-spoken, premium, and actionable. No numeric scores in the prose. Focus on the next 90 days.
+Return sections:
 1) Executive Summary (3–5 bullets)
 2) Top Strengths (why they matter)
-3) Priority Shifts (2–4 targeted recommendations)
+3) Priority Shifts (2–4 targeted moves)
 4) Leadership Behaviors & Rituals (linked to styles)
-5) Risks to Monitor & Metrics to Watch
-`;
+5) Risks to Monitor & Metrics to Watch`;
 
-    const user = `
-Snapshot:
-${JSON.stringify(snapshot, null, 2)}
+    const userPrompt = `
+Snapshot (redacted for brevity):
+scores: ${JSON.stringify(normalizedScores)}
+top3: ${JSON.stringify(snapshot.top3 || {})}
 
 Reference notes:
-${(referenceNotes || []).join("\n")}
+${referenceNotes.join("\n")}
 
 Constraints:
-- No numeric scoring in the text.
+- No numeric scoring in the prose.
 - Premium, concise, actionable tone.
 `;
 
-    // Add an internal timeout (~20s) so we fail before the gateway does
+    // Add a reasonable timeout to avoid 504s
     const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), 20000);
+    const timeout = setTimeout(() => controller.abort(), 20000); // 20s
 
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -77,29 +80,26 @@ Constraints:
       },
       body: JSON.stringify({
         model: MODEL,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
         temperature: 0.4,
+        messages: [
+          { role: "system", content: sysPrompt },
+          { role: "user", content: userPrompt },
+        ],
       }),
     }).catch((e) => {
-      throw new Error(`OpenAI fetch failed: ${e?.message || e}`);
+      throw new Error(`Network/OpenAI fetch failed: ${e?.message || String(e)}`);
     });
-
-    clearTimeout(t);
+    clearTimeout(timeout);
 
     if (!r.ok) {
       const detail = await r.text().catch(() => "");
-      return json({ error: "OpenAI error", status: r.status, detail }, 502);
+      return res.status(502).json({ error: "OpenAI error", detail, status: r.status });
     }
 
-    const data = await r.json().catch(() => ({}));
+    const data = await r.json();
     const text = data?.choices?.[0]?.message?.content || "";
-    return json({ text }, 200);
+    return res.status(200).json({ ok: true, text });
   } catch (e: any) {
-    const msg = String(e?.message || e);
-    const isAbort = e?.name === "AbortError" || /abort|timed out|timeout/i.test(msg);
-    return json({ error: isAbort ? "timeout" : "server", detail: msg }, isAbort ? 504 : 500);
+    return res.status(500).json({ error: "Server error", detail: e?.message || String(e) });
   }
 }
