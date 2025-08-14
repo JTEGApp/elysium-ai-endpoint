@@ -15,7 +15,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-    const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+    const MODEL = process.env.OPENAI_MODEL || "gpt-5";
     if (!OPENAI_API_KEY) {
       return res.status(401).json({ error: "Missing OPENAI_API_KEY" });
     }
