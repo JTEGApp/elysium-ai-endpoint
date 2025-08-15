@@ -1,88 +1,126 @@
-// api/analyze.ts
-import OpenAI from "openai";
+import type { VercelRequest, VercelResponse } from "@vercel/node";
 
-// Load environment variables
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+/**
+ * POST /api/analyze
+ * Body:
+ * {
+ *   "brand": "The Elysium Group",
+ *   "snapshot": {
+ *     "scores": [{ "key":"caring","style":"Caring","current":6 }, ...],
+ *     "top3": { "observed": [...], "personal": [...] }
+ *   },
+ *   "referenceNotes": ["executive tone", "no visible numbers in prose"]
+ * }
+ */
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // CORS for browser calls
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    return res.status(200).end();
+  }
 
-// Static reference for The Chosen XIII + 8 Culture Styles
-// This is condensed for demonstration — replace with your detailed descriptions.
-const CULTURE_MATRIX = `
-THE CHOSEN XIII — Leadership Competencies:
-1. Strategic Vision
-2. Operational Excellence
-3. Innovation Mindset
-4. Talent Development
-5. Cross-functional Collaboration
-6. Decision-making Under Pressure
-7. Ethical Leadership
-8. Financial Acumen
-9. Change Leadership
-10. Customer Centricity
-11. Global Perspective
-12. Influence & Communication
-13. Resilience
-
-EIGHT CULTURE STYLES:
-1. Caring — Relationships, mutual trust, collaboration.
-2. Purpose — Idealism, shared cause, values-driven.
-3. Learning — Creativity, curiosity, exploration.
-4. Enjoyment — Fun, excitement, playfulness.
-5. Results — Achievement, winning, goal orientation.
-6. Authority — Boldness, decisiveness, dominance.
-7. Safety — Planning, caution, risk management.
-8. Order — Respect, structure, shared norms.
-`;
-
-export default async function handler(req, res) {
   if (req.method !== "POST") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    const { scores, top3, followups, raw_answers } = req.body;
+    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+    // You said you set OPENAI_MODEL to “gpt-5” in Vercel; we keep a safe default just in case.
+    const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
-    // Use gpt-5 by default unless overridden
-    const model = process.env.OPENAI_MODEL || "gpt-5";
+    if (!OPENAI_API_KEY) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+    }
 
-    const prompt = `
-You are an expert in corporate culture and leadership transformation.
-You have access to the following reference framework:
-${CULTURE_MATRIX}
+    const { brand, snapshot, referenceNotes } = (req.body ?? {}) as {
+      brand?: string;
+      snapshot?: {
+        scores?: Array<{ key: string; style?: string; current?: number }>;
+        top3?: { observed?: string[]; personal?: string[] };
+      };
+      referenceNotes?: string[];
+    };
 
-The following is the cumulative assessment data for a company:
-- Scores by culture style and leadership competency: ${JSON.stringify(scores, null, 2)}
-- Top 3 culture styles observed: ${JSON.stringify(top3, null, 2)}
-- Follow-up responses: ${JSON.stringify(followups, null, 2)}
-- Raw answers: ${JSON.stringify(raw_answers, null, 2)}
+    if (!snapshot || !Array.isArray(snapshot.scores)) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      return res
+        .status(400)
+        .json({ error: "Missing snapshot.scores (array required)" });
+    }
 
-TASK:
-1. Provide a detailed **executive-level analysis** of the organization's current culture and leadership profile.
-2. Identify **strengths** in culture and leadership that directly contribute to achieving improved business outcomes.
-3. Identify **gaps** and **risks** — highlight how these may affect strategic goals, talent retention, innovation, and market competitiveness.
-4. Provide **actionable recommendations** for leadership and culture transformation, prioritizing the most critical changes.
-5. Integrate **case studies** or examples from high-performing organizations that successfully addressed similar challenges.
-6. Ensure your tone is analytical, authoritative, and insightful — suitable for a CEO or board-level audience.
+    // Light input sanitation/normalization
+    const cleanedScores = snapshot.scores
+      .filter((r) => r && typeof r.key === "string")
+      .map((r) => ({
+        key: r.key,
+        style: r.style || r.key,
+        current: typeof r.current === "number" ? r.current : 0,
+      }));
 
-Begin your report with an **Executive Summary**, then break down each section clearly.
-    `;
+    const sys = `
+You are a senior organizational culture advisor writing for discerning corporate executives at "${brand || "The Elysium Group"}".
+Use the HBR 8 culture styles (Caring, Purpose, Learning, Enjoyment, Results, Authority, Safety, Order).
+Speak in a premium, plain-spoken voice focused on business outcomes.
+Do NOT show numeric scores in the prose; translate them into qualitative insights.
+When helpful, include concise, relevant case references (no confidential data) and exemplars to make the guidance tangible.
 
-    const completion = await openai.chat.completions.create({
-      model,
-      messages: [
-        { role: "system", content: "You are a senior culture and leadership transformation advisor for Fortune 500 executives." },
-        { role: "user", content: prompt }
-      ],
-      temperature: 0.3,
-      max_tokens: 2000
+Deliver:
+1) Executive Summary: 3–5 bullets on the culture profile and business implications.
+2) Strengths Worth Preserving: why they matter and where they create advantage.
+3) Priority Shifts (next 90 days): 3–5 practical, leader-led moves (cadence, rituals, governance).
+4) Risks to Monitor: early warning signs and counter-measures.
+5) Metrics & Signals: how to know it’s working (leading and lagging).
+Tone: crisp, board-ready, action-oriented. Keep it under ~600 words.
+`;
+
+    const usr = `
+Snapshot (qualitative only, no numbers in output):
+${JSON.stringify({ scores: cleanedScores, top3: snapshot.top3 || {} }, null, 2)}
+
+Reference notes from client:
+${(referenceNotes || []).join("\n") || "(none)"}
+`;
+
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        temperature: 0.4,
+        messages: [
+          { role: "system", content: sys },
+          { role: "user", content: usr },
+        ],
+      }),
     });
 
-    const output = completion.choices[0]?.message?.content || "";
+    if (!r.ok) {
+      const detail = await r.text().catch(() => "");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      return res.status(502).json({ error: "OpenAI error", detail });
+    }
 
-    return res.status(200).json({ report: output });
-  } catch (error) {
-    console.error("AI analysis error:", error);
-    return res.status(500).json({ error: "Failed to generate analysis" });
+    const data = (await r.json()) as any;
+    const text =
+      data?.choices?.[0]?.message?.content?.trim() ||
+      "No analysis was generated.";
+
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    return res.status(200).json({ text, model: MODEL });
+  } catch (err: any) {
+    console.error("Analyze error:", err);
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    return res.status(500).json({
+      error: "server",
+      detail: err?.message || String(err),
+    });
   }
 }
