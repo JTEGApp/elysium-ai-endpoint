@@ -2,6 +2,7 @@
   "version": 2,
   "functions": {
     "api/**/*.[jt]s": {
+      "runtime": "nodejs20.x",
       "memory": 1024,
       "maxDuration": 20
     }
