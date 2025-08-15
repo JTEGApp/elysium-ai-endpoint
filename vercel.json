@@ -1,16 +1,21 @@
 {
-  "name": "elysium-ai-endpoint",
-  "version": "1.0.0",
-  "private": true,
-  "description": "Serverless AI analysis endpoint for The Elysium Group",
-  "license": "UNLICENSED",
-  "engines": {
-    "node": ">=18"
+  "version": 2,
+  "functions": {
+    "api/**/*.[jt]s": {
+      "runtime": "nodejs20.x",
+      "memory": 1024,
+      "maxDuration": 20
+    }
   },
-  "scripts": {
-    "vercel-build": "echo \"Using Vercel's built-in TypeScript support\"",
-    "start": "node server.js"
-  },
-  "dependencies": {},
-  "devDependencies": {}
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        "Access-Control-Allow-Methods": "GET,POST,OPTIONS"
+      },
+      "continue": true
+    }
+  ]
 }
