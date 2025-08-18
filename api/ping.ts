@@ -1,18 +1,26 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
-function cors(res: VercelResponse) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "content-type, authorization");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-}
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // CORS
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    return res.status(200).end();
+  }
 
-export default function handler(req: VercelRequest, res: VercelResponse) {
-  cors(res);
-  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "GET") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
-  const key = process.env.OPENAI_API_KEY || "";
   const model = process.env.OPENAI_MODEL || "gpt-5";
-  res.status(200).json({
+  const key = process.env.OPENAI_API_KEY || "";
+
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Cache-Control", "no-store");
+
+  return res.status(200).json({
     ok: true,
     now: Date.now(),
     model,
