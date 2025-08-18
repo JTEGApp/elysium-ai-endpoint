@@ -24,7 +24,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
     // Use your intended model; keep params compatible (some models ignore/forbid non-default temperature)
-    const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+    const MODEL = process.env.OPENAI_MODEL || "gpt-5";
 
     if (!OPENAI_API_KEY) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
