@@ -1,22 +1,27 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
-function cors(res: VercelResponse) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "content-type, authorization");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-}
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  cors(res);
-  if (req.method === "OPTIONS") return res.status(200).end();
+  // CORS
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    return res.status(200).end();
+  }
 
-  const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-  const MODEL = process.env.OPENAI_MODEL || "gpt-5";
-  if (!OPENAI_API_KEY) {
-    return res.status(401).json({ ok: false, error: "Missing OPENAI_API_KEY" });
+  if (req.method !== "GET") {
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
+    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+    const MODEL = process.env.OPENAI_MODEL || "gpt-5";
+
+    if (!OPENAI_API_KEY) {
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+    }
+
+    // Minimal chat call – no temperature (some models reject non-default)
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -25,18 +30,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
       body: JSON.stringify({
         model: MODEL,
-        temperature: 0,
         messages: [
-          { role: "system", content: "You are a terse assistant." },
-          { role: "user", content: "Reply with 'OK'." },
+          { role: "system", content: "Reply with OK." },
+          { role: "user", content: "Health check" },
         ],
       }),
     });
 
-    const data = await r.json().catch(() => ({}));
-    const msg = data?.choices?.[0]?.message?.content || "";
-    return res.status(200).json({ ok: true, model: MODEL, reply: msg.slice(0, 50) });
+    const text = await r.text();
+    let json: any = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      // leave as raw text
+    }
+
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+    if (!r.ok) {
+      return res.status(r.status).json({ error: "OpenAI error", detail: json || text });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      model: MODEL,
+      body: json || text,
+    });
   } catch (e: any) {
-    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+    return res.status(500).json({ error: "server", detail: e?.message || String(e) });
   }
 }
