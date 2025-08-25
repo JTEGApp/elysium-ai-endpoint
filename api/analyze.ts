@@ -1,225 +1,260 @@
-import type { VercelRequest, VercelResponse } from "@vercel/node";
+// api/analyze.ts
+import type { VercelRequest, VercelResponse } from 'vercel';
 
-// Optional: a stable matrix you can tailor over time.
-// This “Chosen XIII + 8 Styles” scaffold is used to anchor the model.
-const CHOSEN_MATRIX = {
-  styles: {
-    Caring: {
-      strengths: [
-        "Trust, collaboration, and retention",
-        "Psychological safety and cross-team support",
-      ],
-      watchouts: [
-        "Consensus drag on decisions",
-        "Performance avoidance in tough calls",
-      ],
-      leadership_behaviors: [
-        "Frequent 1:1s and skip-levels",
-        "Gratitude rituals; amplify peer recognition",
-      ],
-      metrics: ["eNPS verbatims on support", "Internal mobility / retention"],
-    },
-    "Purpose-Driven": {
-      strengths: [
-        "Motivation from meaning; clarity of why",
-        "Resilience during setbacks",
-      ],
-      watchouts: [
-        "Mission-over-math bias",
-        "Under-investment in operational excellence",
-      ],
-      leadership_behaviors: [
-        "Tie goals to customer impact",
-        "Narrate purpose in weekly business reviews",
-      ],
-      metrics: ["Customer outcome KPIs", "Roadmap value realisation"],
-    },
-    Learning: {
-      strengths: ["Experiment velocity", "Knowledge sharing"],
-      watchouts: ["Churn without kill-rules", "Pet experiments"],
-      leadership_behaviors: [
-        "Pre-mortems / post-mortems",
-        "Monthly ‘what we learned’ demos",
-      ],
-      metrics: ["Exp/quarter", "Time-to-decision", "Re-usable learnings"],
-    },
-    Enjoyment: {
-      strengths: ["Energy and momentum", "Employer brand lift"],
-      watchouts: ["Shiny-object drift", "Uneven execution depth"],
-      leadership_behaviors: [
-        "Celebrate small wins",
-        "Manage energy: sprint–recover cycles",
-      ],
-      metrics: ["Participation in rituals", "Cycle time trend"],
-    },
-    "Results-Oriented": {
-      strengths: ["Focus, accountability, throughput"],
-      watchouts: ["Short-termism", "Burnout risk"],
-      leadership_behaviors: [
-        "3 metrics that matter per team",
-        "Weekly commit-review; unblock quickly",
-      ],
-      metrics: ["On-time delivery", "Outcome vs. output"],
-    },
-    Authority: {
-      strengths: ["Decisiveness; crisp calls", "Clear ownership"],
-      watchouts: ["Voice/psych safety erosion", "Single-threaded failure modes"],
-      leadership_behaviors: [
-        "Decision logs with rationale",
-        "Escalation SLAs; clarify DRI",
-      ],
-      metrics: ["Decision latency", "Escalation resolution time"],
-    },
-    Safety: {
-      strengths: ["Reliability and quality", "Customer trust"],
-      watchouts: ["Over-controls; slow cycles", "Gold-plating"],
-      leadership_behaviors: [
-        "Guardrails, not gates",
-        "Error budgets; blameless postmortems",
-      ],
-      metrics: ["Incident rate/MTTR", "Defect escape rate"],
-    },
-    "Order-Oriented": {
-      strengths: ["Predictability; scalable ops", "Role clarity"],
-      watchouts: ["Process over outcomes", "Bureaucratic drag"],
-      leadership_behaviors: [
-        "Sunset unused processes quarterly",
-        "SLA-based handoffs",
-      ],
-      metrics: ["Lead time", "Handoff rework rate"],
-    },
+type ScoreRow = { key: string; style?: string; current: number };
+type Snapshot = { scores: ScoreRow[]; top3?: { observed?: string[]; personal?: string[] } };
+
+const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY!;
+
+// Stable culture style matrix (editable): label + “helps/hurts” one-liners used in the narrative
+const STYLE_MATRIX: Record<
+  string,
+  { label: string; strengths: string[]; risks: string[] }
+> = {
+  caring: {
+    label: 'Caring (Collaboration & Trust)',
+    strengths: [
+      'High relational trust improves retention and knowledge sharing',
+      'Customer empathy tends to increase CSAT and NPS'
+    ],
+    risks: [
+      'Conflict avoidance can slow decisions',
+      'Consensus culture may dilute accountability'
+    ]
   },
-  // “Chosen XIII” – leadership capability lenses (example scaffold)
-  chosenXIII: [
-    "Strategy clarity",
-    "Customer obsession",
-    "Decisiveness & speed",
-    "Talent density",
-    "Coaching & feedback",
-    "Cross-functional execution",
-    "Operational rigor",
-    "Learning & innovation",
-    "Accountability systems",
-    "Purpose & narrative",
-    "Change leadership",
-    "Risk & controls",
-    "Resource allocation",
-  ],
+  purpose: {
+    label: 'Purpose-Driven (Mission & Impact)',
+    strengths: [
+      'Mission clarity aligns teams and reduces strategic thrash',
+      'Strong hiring magnet for values-aligned talent'
+    ],
+    risks: [
+      'Mission drift if not connected to operating targets',
+      'Can underweight near-term execution pressure'
+    ]
+  },
+  learning: {
+    label: 'Learning (Innovation & Curiosity)',
+    strengths: [
+      'Experimentation increases adaptability and time-to-insight',
+      'Post-mortems raise institutional memory'
+    ],
+    risks: [
+      'Unbounded experimentation erodes focus',
+      'Risk aversion kills ideas before validation'
+    ]
+  },
+  enjoyment: {
+    label: 'Enjoyment (Energy & Momentum)',
+    strengths: [
+      'Celebrating wins sustains pace',
+      'Positive affect improves cross-team cooperation'
+    ],
+    risks: [
+      'Can mask hard trade-offs',
+      'May be perceived as “style over substance” if metrics lag'
+    ]
+  },
+  results: {
+    label: 'Results-Oriented (Performance & Outcomes)',
+    strengths: [
+      'Clear goals and tracking drive throughput',
+      'Metric discipline reveals what works quickly'
+    ],
+    risks: [
+      'Over-pressure risks burnout and corner-cutting',
+      'Short-termism weakens innovation capacity'
+    ]
+  },
+  authority: {
+    label: 'Authority (Decisiveness & Control)',
+    strengths: [
+      'Fast, clear calls reduce decision latency',
+      'Useful in high-ambiguity or crisis environments'
+    ],
+    risks: [
+      'Top-down bias suppresses IC agency and ideas',
+      'Single-threaded leadership becomes a bottleneck'
+    ]
+  },
+  safety: {
+    label: 'Safety (Risk Management & Reliability)',
+    strengths: [
+      'Quality and reliability reduce rework and reputational risk',
+      'Great base for regulated industries'
+    ],
+    risks: [
+      'Change friction delays time-to-market',
+      'Over-control shrinks experimentation surface area'
+    ]
+  },
+  order: {
+    label: 'Order-Oriented (Process & Consistency)',
+    strengths: [
+      'Clear handoffs and SOPs improve scale efficiency',
+      'Predictability supports distributed execution'
+    ],
+    risks: [
+      'Process ossification stifles speed',
+      'Excessive controls create compliance theater'
+    ]
+  }
 };
 
+// --- helpers ---
+function bad(res: VercelResponse, status: number, msg: string, detail?: any) {
+  res.status(status).json({ error: msg, detail });
+}
+
+function asPrettyScores(scores: ScoreRow[]) {
+  const sorted = [...scores].sort((a, b) => (b.current ?? 0) - (a.current ?? 0));
+  return sorted.map(s => ({
+    key: s.key,
+    label: STYLE_MATRIX[s.key]?.label || s.style || s.key,
+    current: s.current
+  }));
+}
+
+// prompt: instructs JSON with sections for exec report
+function buildPrompt(brand: string, snapshot: Snapshot, orgMeta?: any) {
+  const pretty = asPrettyScores(snapshot.scores);
+  const topPersonal = snapshot.top3?.personal || [];
+  const company = orgMeta?.company || orgMeta?.domain || '';
+  const industry = orgMeta?.industry || '';
+
+  // Lightly formatted, deterministic style with explicit structure
+  return [
+    {
+      role: 'system',
+      content:
+        `You are a seasoned culture & leadership advisor creating executive-ready reports for The Elysium Group. ` +
+        `Audience: C-suite. Tone: plain-spoken, premium, concise. ` +
+        `Avoid numeric scores in prose; describe relative strength (e.g., “strong, emerging, weak”) unless placing a data snippet table. ` +
+        `Link culture patterns to measurable business outcomes (growth, margin, cycle time, quality, retention). ` +
+        `Where relevant, include brief case-style examples that a reader could research (company name + 1-line lesson). ` +
+        `Return ONLY JSON matching the schema I will give you. No markdown.`
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        instruction: 'Produce a complete executive culture report as JSON.',
+        brand,
+        org: { company, industry },
+        inputs: {
+          scores: pretty,
+          topPersonal,
+          matrix: STYLE_MATRIX
+        },
+        schema: {
+          type: 'object',
+          required: [
+            'executiveSummary',
+            'methodology',
+            'currentState',
+            'leadershipImplications',
+            'risks',
+            'gapsAndOpportunities',
+            'recommendedActions',
+            'expectedBusinessImpact',
+            'appendix'
+          ],
+          properties: {
+            executiveSummary: { type: 'string' },
+            methodology: { type: 'string' },
+            currentState: {
+              type: 'object',
+              properties: {
+                styleHighlights: { type: 'array', items: { type: 'string' } },
+                table: {
+                  type: 'array',
+                  items: { type: 'object', properties: { label: { type: 'string' }, relative: { type: 'string' } } }
+                },
+                personalTop3: { type: 'array', items: { type: 'string' } }
+              }
+            },
+            leadershipImplications: { type: 'array', items: { type: 'string' } },
+            risks: { type: 'array', items: { type: 'string' } },
+            gapsAndOpportunities: { type: 'array', items: { type: 'string' } },
+            recommendedActions: {
+              type: 'object',
+              properties: {
+                days90: { type: 'array', items: { type: 'string' } },
+                months12: { type: 'array', items: { type: 'string' } },
+                operatingMechanisms: { type: 'array', items: { type: 'string' } }
+              }
+            },
+            expectedBusinessImpact: {
+              type: 'array',
+              items: { type: 'string' }
+            },
+            caseBriefs: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  org: { type: 'string' },
+                  lesson: { type: 'string' }
+                }
+              }
+            },
+            appendix: {
+              type: 'object',
+              properties: {
+                notes: { type: 'array', items: { type: 'string' } },
+                assumptions: { type: 'array', items: { type: 'string' } }
+              }
+            }
+          }
+        }
+      })
+    }
+  ];
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // CORS preflight
-  if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "content-type, authorization");
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-    return res.status(200).end();
-  }
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    return res.status(204).end();
   }
 
   try {
-    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-    // You told me this should be “gpt-5”
-    const MODEL = process.env.OPENAI_MODEL || "gpt-5";
-    if (!OPENAI_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+    const { brand = 'The Elysium Group', snapshot, orgMeta } = req.body || {};
+
+    if (!snapshot || !Array.isArray(snapshot.scores) || snapshot.scores.length === 0) {
+      return bad(res, 400, 'Missing snapshot.scores (array required)');
     }
+    if (!OPENAI_API_KEY) return bad(res, 500, 'Server not configured (missing OPENAI_API_KEY)');
 
-    const { snapshot, referenceNotes = [], brand, sources = [] } = req.body || {};
-    if (!snapshot?.scores || !Array.isArray(snapshot.scores)) {
-      return res.status(400).json({ error: "Missing snapshot.scores (array required)" });
-    }
-
-    // NB: Some models don’t accept custom temperatures — omit unless you’re sure it’s supported.
-    // Also, keep requests compact for Vercel function time limits.
-    const system = `
-You are an elite organizational culture and leadership transformation advisor at "${brand || "The Elysium Group"}".
-Audience: time-constrained corporate executives trying to align culture and leadership to corporate priorities and business performance
-Tone: premium, plain-spoken, direct. Include numeric scores in the prose.
-
-Ground truth scaffolds are provided (8 Culture Styles & The Chosen XIII). Use them to
-anchor leadership behaviors, risks, and metrics. Do not invent citations. If 'sources'
-are provided, you may quote or summarize them and surface the links as "Suggested reading".
-Otherwise, use generic, non-branded case vignettes without naming specific companies.
-
-Return a single Markdown document in this outline:
-
-# Executive Summary
-- 3–5 bullets on the signal in this data (strengths, tensions, direction)
-
-# Current Culture Profile
-- Brief on dominant/lagging styles with positives and watchouts (no numbers)
-- “What this looks like on the ground” (2–4 bullets)
-
-# Leadership Needs & Risks (Chosen XIII lens)
-- The 4–6 capabilities that matter most now and why
-- Clear risks if left unaddressed
-
-# Gaps & Opportunities
-- Where execution is leaking energy (tie to styles + XIII)
-- Where small moves create outsized impact
-
-# 90-Day Priorities
-- 3–5 moves with owners/rituals/decision rules
-- What to stop, start, continue
-
-# 12-Month Horizon
-- End-state narrative of ways of working
-- Operating metrics that prove it’s working
-
-# Metrics to Watch
-- Leading & lagging indicators (no vanity metrics)
-
-# Suggested Reading / Cases (optional)
-- If 'sources' are provided, list them with 1-line “why it’s relevant”.
-`;
-
-    const compactScores = snapshot.scores.map((s: any) => ({
-      key: s.key,
-      style: s.style || s.key,
-      current: s.current, // numeric for analysis; not to be surfaced as numbers in prose
-    }));
-
-    const user = {
-      referenceNotes,
-      matrix: CHOSEN_MATRIX,
-      snapshot: {
-        scores: compactScores,
-        top3: snapshot.top3 || {},
-      },
-      sources, // optional array of {title, url, why} you pass from the UI
-    };
-
-    const r = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
+    const messages = buildPrompt(brand, snapshot as Snapshot, orgMeta);
+    // OpenAI Chat Completions (JSON mode)
+    const r = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({
         model: MODEL,
-        // DO NOT set temperature if your account/model rejects it.
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: JSON.stringify(user) },
-        ],
-      }),
+        // Some models only accept default temperature—omit custom values
+        messages,
+        response_format: { type: 'json_object' }
+      })
     });
 
     if (!r.ok) {
-      const detail = await r.text();
-      return res.status(502).json({ error: "OpenAI error", detail });
+      const detail = await r.text().catch(() => '');
+      return bad(res, r.status, 'OpenAI error', detail);
     }
-
     const data = await r.json();
-    const text = data?.choices?.[0]?.message?.content || "";
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "content-type, authorization");
-    return res.status(200).json({ text });
+    const content = data?.choices?.[0]?.message?.content || '{}';
+
+    // Pass-through JSON (client can render & export)
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    return res.status(200).json(JSON.parse(content));
   } catch (e: any) {
-    console.error("Server error:", e);
-    return res.status(500).json({ error: "server", detail: e?.message || String(e) });
+    return bad(res, 500, 'Unexpected server error', e?.message || String(e));
   }
 }
