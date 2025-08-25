@@ -4,7 +4,7 @@ import type { VercelRequest, VercelResponse } from 'vercel';
 type ScoreRow = { key: string; style?: string; current: number };
 type Snapshot = { scores: ScoreRow[]; top3?: { observed?: string[]; personal?: string[] } };
 
-const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const MODEL = process.env.OPENAI_MODEL || 'gpt-5';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY!;
 
 // Stable culture style matrix (editable): label + “helps/hurts” one-liners used in the narrative
